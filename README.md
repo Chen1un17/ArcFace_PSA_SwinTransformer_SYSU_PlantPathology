@@ -1,1 +1,2 @@
-"# Plant" 
+# Visual-Efficientnets
+可视化Efficientnet并且在Plant Pathology-2021数据集上进行训练
