@@ -251,8 +251,11 @@ $$
 - 使用累加后的 TP、FP 和 FN 计算 Precision、Recall 和 F1。
 
 **公式**：
+
 $$ \text{Micro Average Precision} = \frac{\sum_{i=1}^{N} TP_i}{\sum_{i=1}^{N} (TP_i + FP_i)} $$
+
 $$ \text{Micro Average Recall} = \frac{\sum_{i=1}^{N} TP_i}{\sum_{i=1}^{N} (TP_i + FN_i)} $$
+
 $$ \text{Micro Average F1} = \frac{2 \times \text{Micro Precision} \times \text{Micro Recall}}{\text{Micro Precision} + \text{Micro Recall}} $$
 
 **意义**：
