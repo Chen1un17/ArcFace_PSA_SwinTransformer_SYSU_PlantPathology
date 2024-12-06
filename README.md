@@ -151,7 +151,10 @@ train_transform = transforms.Compose([
 精确率表示模型预测为正类的样本中，实际为正类的比例。换句话说，它衡量的是模型预测的准确性。
 
 **公式**：
-\[ \text{Precision} = \frac{TP}{TP + FP} \]
+
+$$
+\text{Precision} = \frac{TP}{TP + FP} 
+$$
 
 - **TP（True Positive）**：真正例，模型正确预测为正类的样本数。
 - **FP（False Positive）**：假正例，模型错误预测为正类的样本数。
@@ -167,7 +170,10 @@ train_transform = transforms.Compose([
 召回率表示实际为正类的样本中，模型正确预测为正类的比例。它衡量的是模型的覆盖能力。
 
 **公式**：
-\[ \text{Recall} = \frac{TP}{TP + FN} \]
+
+$$
+ \text{Recall} = \frac{TP}{TP + FN} 
+$$
 
 - **FN（False Negative）**：假负例，模型错误预测为负类的样本数。
 
@@ -182,7 +188,10 @@ train_transform = transforms.Compose([
 F1 分数是精确率和召回率的调和平均值，综合考虑了两者的平衡。它是一个权衡精确率和召回率的指标。
 
 **公式**：
-\[ \text{F1} = 2 \times \frac{\text{Precision} \times \text{Recall}}{\text{Precision} + \text{Recall}} \]
+
+$$
+ \text{F1} = 2 \times \frac{\text{Precision} \times \text{Recall}}{\text{Precision} + \text{Recall}} 
+$$
 
 **意义**：
 F1 分数在精确率和召回率之间寻找平衡，特别适用于类别不平衡的情况。
@@ -195,7 +204,10 @@ F1 分数在精确率和召回率之间寻找平衡，特别适用于类别不�
 平均精度是基于精确率-召回率曲线（Precision-Recall Curve）下的面积。它衡量的是模型在不同阈值下的整体性能。
 
 **公式**：
-\[ \text{AP} = \int_{0}^{1} P(r) \, dr \]
+
+$$
+ \text{AP} = \int_{0}^{1} P(r) \, dr 
+$$
 
 **意义**：
 AP 提供了模型在所有可能的阈值下的性能概述，较高的 AP 表明模型在整体上表现良好。
@@ -212,12 +224,17 @@ AP 提供了模型在所有可能的阈值下的性能概述，较高的 AP 表�
 宏平均是对每个类别的评估指标（如 Precision、Recall、F1、AP）分别计算后，再取这些指标的简单平均值。每个类别在计算时被赋予相同的权重。
 
 **计算方法**：
+
 - 对于每个类别，计算 Precision、Recall、F1 和 AP。
 - 将所有类别的 Precision、Recall、F1 和 AP 分别取平均。
 
 **公式**：
-\[ \text{Macro Average} = \frac{1}{N} \sum_{i=1}^{N} \text{Metric}_i \]
-其中，\( N \) 是类别的总数，\( \text{Metric}_i \) 是第 \( i \) 个类别的某一指标。
+
+$$
+ \text{Macro Average} = \frac{1}{N} \sum_{i=1}^{N} \text{Metric}_i 
+$$
+
+其中， N  是类别的总数， $\text{Metric}_i$  是第 $ i $ 个类别的某一指标。
 
 **意义**：
 宏平均强调各类别的独立表现，适用于类别数量较少且每个类别同等重要的情况。然而，对于类别不平衡的数据集，宏平均可能会被少数类别的表现所主导。
@@ -234,9 +251,9 @@ AP 提供了模型在所有可能的阈值下的性能概述，较高的 AP 表�
 - 使用累加后的 TP、FP 和 FN 计算 Precision、Recall 和 F1。
 
 **公式**：
-\[ \text{Micro Average Precision} = \frac{\sum_{i=1}^{N} TP_i}{\sum_{i=1}^{N} (TP_i + FP_i)} \]
-\[ \text{Micro Average Recall} = \frac{\sum_{i=1}^{N} TP_i}{\sum_{i=1}^{N} (TP_i + FN_i)} \]
-\[ \text{Micro Average F1} = \frac{2 \times \text{Micro Precision} \times \text{Micro Recall}}{\text{Micro Precision} + \text{Micro Recall}} \]
+$$ \text{Micro Average Precision} = \frac{\sum_{i=1}^{N} TP_i}{\sum_{i=1}^{N} (TP_i + FP_i)} $$
+$$ \text{Micro Average Recall} = \frac{\sum_{i=1}^{N} TP_i}{\sum_{i=1}^{N} (TP_i + FN_i)} $$
+$$ \text{Micro Average F1} = \frac{2 \times \text{Micro Precision} \times \text{Micro Recall}}{\text{Micro Precision} + \text{Micro Recall}} $$
 
 **意义**：
 微平均考虑了各类别的样本数量，对于类别不平衡的数据集，微平均更能反映整体性能。然而，它可能会掩盖少数类别的表现。
