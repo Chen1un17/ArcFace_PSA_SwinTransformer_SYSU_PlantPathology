@@ -3,11 +3,22 @@ import numpy as np
 import torch
 from sklearn.metrics import f1_score, accuracy_score
 
+from sklearn.metrics import f1_score, accuracy_score, average_precision_score
+
 def calculate_metrics(outputs, targets, threshold=0.5):
     preds = (outputs > threshold).astype(int)
+
+    # 计算 F1 分数
     f1 = f1_score(targets, preds, average='macro')
+
+    # 计算准确率
     accuracy = accuracy_score(targets, preds)
-    return f1, accuracy
+
+    # 计算平均精度均值 (mAP)
+    map_score = average_precision_score(targets, outputs, average='macro')
+
+    return f1, accuracy, map_score
+
 
 def save_checkpoint(state, filename='checkpoint.pth'):
     torch.save(state, filename)

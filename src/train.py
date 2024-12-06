@@ -1,4 +1,3 @@
-# src/train.py
 import os
 import time
 import torch
@@ -8,6 +7,7 @@ from torchvision import transforms
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
+import matplotlib.pyplot as plt  
 
 from dataset import PlantPathologyDataset
 from model import get_model
@@ -42,8 +42,8 @@ def train_epoch(model, loader, criterion, optimizer, device, scaler):
     epoch_loss = running_loss / len(loader.dataset)
     all_targets = np.vstack(all_targets)
     all_outputs = np.vstack(all_outputs)
-    f1, accuracy = calculate_metrics(all_outputs, all_targets)
-    return epoch_loss, f1, accuracy
+    f1, accuracy, map_score = calculate_metrics(all_outputs, all_targets)  
+    return epoch_loss, f1, accuracy, map_score  
 
 def eval_epoch(model, loader, criterion, device):
     model.eval()
@@ -66,8 +66,8 @@ def eval_epoch(model, loader, criterion, device):
     epoch_loss = running_loss / len(loader.dataset)
     all_targets = np.vstack(all_targets)
     all_outputs = np.vstack(all_outputs)
-    f1, accuracy = calculate_metrics(all_outputs, all_targets)
-    return epoch_loss, f1, accuracy
+    f1, accuracy, map_score = calculate_metrics(all_outputs, all_targets)  # Modified to include mAP
+    return epoch_loss, f1, accuracy, map_score  # Modified to return mAP
 
 def main():
     # 配置参数
@@ -128,17 +128,29 @@ def main():
     patience = 10
     counter = 0
 
+    # 初始化记录变量
+    train_losses = []
+    val_losses = []
+    train_maps = []
+    val_maps = []
+
     # 训练循环
     for epoch in range(1, num_epochs + 1):
         print(f"Epoch {epoch}/{num_epochs}")
 
-        train_loss, train_f1, train_acc = train_epoch(model, train_loader, criterion, optimizer, device, scaler)
-        val_loss, val_f1, val_acc = eval_epoch(model, val_loader, criterion, device)
+        train_loss, train_f1, train_acc, train_map = train_epoch(model, train_loader, criterion, optimizer, device, scaler)
+        val_loss, val_f1, val_acc, val_map = eval_epoch(model, val_loader, criterion, device)
 
         scheduler.step(val_loss)
 
-        print(f"Train Loss: {train_loss:.4f} | Train F1: {train_f1:.4f} | Train Acc: {train_acc:.4f}")
-        print(f"Val Loss: {val_loss:.4f} | Val F1: {val_f1:.4f} | Val Acc: {val_acc:.4f}")
+        # 记录指标
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        train_maps.append(train_map)
+        val_maps.append(val_map)
+
+        print(f"Train Loss: {train_loss:.4f} | Train F1: {train_f1:.4f} | Train mAP: {train_map:.4f} | Train Acc: {train_acc:.4f}")
+        print(f"Val Loss: {val_loss:.4f} | Val F1: {val_f1:.4f} | Val mAP: {val_map:.4f} | Val Acc: {val_acc:.4f}")
 
         # 早停机制
         if val_f1 > best_val_f1:
@@ -160,6 +172,35 @@ def main():
                 break
 
     print(f"训练完成。最佳验证 F1 分数: {best_val_f1:.4f} 在 epoch {best_epoch}")
+
+    # 生成并保存曲线图
+    epochs = range(1, best_epoch + 1)
+
+    # 绘制损失曲线
+    plt.figure(figsize=(10,5))
+    plt.plot(epochs, train_losses[:best_epoch], 'b-', label='Train Loss')
+    plt.plot(epochs, val_losses[:best_epoch], 'r-', label='Val Loss')
+    plt.title('Training and Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    loss_curve_path = os.path.join(checkpoint_dir, 'loss_curve.png')
+    plt.savefig(loss_curve_path)
+    plt.close()
+    print(f"损失曲线已保存到 {loss_curve_path}")
+
+    # 绘制 mAP 曲线
+    plt.figure(figsize=(10,5))
+    plt.plot(epochs, train_maps[:best_epoch], 'b-', label='Train mAP')
+    plt.plot(epochs, val_maps[:best_epoch], 'r-', label='Val mAP')
+    plt.title('Training and Validation mAP')
+    plt.xlabel('Epochs')
+    plt.ylabel('mAP')
+    plt.legend()
+    map_curve_path = os.path.join(checkpoint_dir, 'map_curve.png')
+    plt.savefig(map_curve_path)
+    plt.close()
+    print(f"mAP 曲线已保存到 {map_curve_path}")
 
 if __name__ == '__main__':
     main()
