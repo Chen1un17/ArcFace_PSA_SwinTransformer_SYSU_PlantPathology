@@ -88,12 +88,15 @@ train_transform = transforms.Compose([
 文件夹中需要自己导入图片数据，有处理好的`processed_train_labels.csv`等标签文件
 
 `checkpoints`
+
 存放了训练好的模型权重，需要时可以自行导入
 
 `outputs`
+
 主要存放可视化的结果
 
 `submmisions`
+
 存放`submit`操作生成的`test`的csv文件
 
 ### 代码结构
@@ -114,12 +117,14 @@ train_transform = transforms.Compose([
 
 `evaluate.py`
 
-用于在验证集上评估训练好的模型性能。计算损失、F1 分数和准确率等指标，帮助判断模型的泛化能力。
+用于在验证集上评估训练好的模型性能。计算损失、F1 分数和准确率等指标，并且在验证集上动态更新模型的`threshold`，在得到最优的`threshold`后在训练集上进行测试，并且生成相应的曲线
 
 `generate_submission.py`
+
 使用训练好的模型对测试集进行预测，并生成符合提交要求的 CSV 文件。确保测试集图像路径和标签文件路径正确配置。
 
 `visualize.py`
+
 应用GradCam，将EfficientNet的运行过程可视化，生成训练过程的热力图
 
 `utils.py`
@@ -135,6 +140,106 @@ train_transform = transforms.Compose([
 `main.py`
 
 项目的主入口脚本。通过命令行参数选择不同的操作模式（训练、评估、生成提交文件），实现流程的统一管理。
+
+## **评估指标说明**
+
+在此先说明我们的评估指标
+
+### 1. **Precision（精确率，P）**
+
+**定义**：
+精确率表示模型预测为正类的样本中，实际为正类的比例。换句话说，它衡量的是模型预测的准确性。
+
+**公式**：
+\[ \text{Precision} = \frac{TP}{TP + FP} \]
+
+- **TP（True Positive）**：真正例，模型正确预测为正类的样本数。
+- **FP（False Positive）**：假正例，模型错误预测为正类的样本数。
+
+**意义**：
+高精确率意味着模型在预测为正类时，错误的概率较低，即模型的假正例较少。
+
+---
+
+### 2. **Recall（召回率，R）**
+
+**定义**：
+召回率表示实际为正类的样本中，模型正确预测为正类的比例。它衡量的是模型的覆盖能力。
+
+**公式**：
+\[ \text{Recall} = \frac{TP}{TP + FN} \]
+
+- **FN（False Negative）**：假负例，模型错误预测为负类的样本数。
+
+**意义**：
+高召回率意味着模型能够识别出大部分的正类样本，假负例较少。
+
+---
+
+### 3. **F1 Score（F1 分数，F1）**
+
+**定义**：
+F1 分数是精确率和召回率的调和平均值，综合考虑了两者的平衡。它是一个权衡精确率和召回率的指标。
+
+**公式**：
+\[ \text{F1} = 2 \times \frac{\text{Precision} \times \text{Recall}}{\text{Precision} + \text{Recall}} \]
+
+**意义**：
+F1 分数在精确率和召回率之间寻找平衡，特别适用于类别不平衡的情况。
+
+---
+
+### 4. **Average Precision（平均精度，AP）**
+
+**定义**：
+平均精度是基于精确率-召回率曲线（Precision-Recall Curve）下的面积。它衡量的是模型在不同阈值下的整体性能。
+
+**公式**：
+\[ \text{AP} = \int_{0}^{1} P(r) \, dr \]
+
+**意义**：
+AP 提供了模型在所有可能的阈值下的性能概述，较高的 AP 表明模型在整体上表现良好。
+
+---
+
+### **宏平均（macro-all）和微平均（micro-all）说明**
+
+在多类别或多标签分类任务中，宏平均和微平均是两种常用的聚合方法，用于计算整体的评估指标。
+
+#### 1. **宏平均（Macro Average）**
+
+**定义**：
+宏平均是对每个类别的评估指标（如 Precision、Recall、F1、AP）分别计算后，再取这些指标的简单平均值。每个类别在计算时被赋予相同的权重。
+
+**计算方法**：
+- 对于每个类别，计算 Precision、Recall、F1 和 AP。
+- 将所有类别的 Precision、Recall、F1 和 AP 分别取平均。
+
+**公式**：
+\[ \text{Macro Average} = \frac{1}{N} \sum_{i=1}^{N} \text{Metric}_i \]
+其中，\( N \) 是类别的总数，\( \text{Metric}_i \) 是第 \( i \) 个类别的某一指标。
+
+**意义**：
+宏平均强调各类别的独立表现，适用于类别数量较少且每个类别同等重要的情况。然而，对于类别不平衡的数据集，宏平均可能会被少数类别的表现所主导。
+
+---
+
+#### 2. **微平均（Micro Average）**
+
+**定义**：
+微平均是将所有类别的 True Positives（TP）、False Positives（FP）和 False Negatives（FN）累加后，再计算总体的评估指标。各类别在计算时的权重与其样本数成正比。
+
+**计算方法**：
+- 将所有类别的 TP、FP 和 FN 累加。
+- 使用累加后的 TP、FP 和 FN 计算 Precision、Recall 和 F1。
+
+**公式**：
+\[ \text{Micro Average Precision} = \frac{\sum_{i=1}^{N} TP_i}{\sum_{i=1}^{N} (TP_i + FP_i)} \]
+\[ \text{Micro Average Recall} = \frac{\sum_{i=1}^{N} TP_i}{\sum_{i=1}^{N} (TP_i + FN_i)} \]
+\[ \text{Micro Average F1} = \frac{2 \times \text{Micro Precision} \times \text{Micro Recall}}{\text{Micro Precision} + \text{Micro Recall}} \]
+
+**意义**：
+微平均考虑了各类别的样本数量，对于类别不平衡的数据集，微平均更能反映整体性能。然而，它可能会掩盖少数类别的表现。
 
 ## 训练机制详解
 
@@ -232,6 +337,15 @@ train_transform = transforms.Compose([
 
 - **保存内容**：包括当前 epoch、模型参数、优化器状态以及验证损失。
 - **加载模型**：在评估和生成提交文件时，使用 `load_checkpoint` 函数加载最佳模型，确保评估的准确性和一致性。
+
+### 可视化曲线绘制
+
+在训练循环结束后，使用 matplotlib 绘制并保存损失和 mAP 的曲线图。
+
+### 验证机制
+
+同时，在`evaluate.py`中，也设置了为每一类别寻找最佳的`threshold`，多标签分类任务中，因为不同类别具有不同的特性和难易程度，因此一个统一的阈值可能无法为所有类别提供最佳性能。并且我们保存了最后得到的最佳结果
+
 
 ### 训练完成
 
@@ -402,4 +516,115 @@ python src/visualize.py
 
 ## 测试结果
 
-待补充
+### 训练过程
+
+```bash
+Epoch 1/30
+Train Loss: 0.4665 | Train F1: 0.2551 | Train mAP: 0.3618 | Train Acc: 0.1967               
+Val Loss: 0.2867 | Val F1: 0.3884 | Val mAP: 0.6193 | Val Acc: 0.4950
+保存最佳模型于 epoch 1
+Epoch 2/30
+Train Loss: 0.2245 | Train F1: 0.6544 | Train mAP: 0.8040 | Train Acc: 0.6400               
+Val Loss: 0.1632 | Val F1: 0.7307 | Val mAP: 0.8878 | Val Acc: 0.7333
+保存最佳模型于 epoch 2
+Epoch 3/30
+Train Loss: 0.1542 | Train F1: 0.8008 | Train mAP: 0.8825 | Train Acc: 0.7623               
+Val Loss: 0.1411 | Val F1: 0.7694 | Val mAP: 0.9032 | Val Acc: 0.7850
+保存最佳模型于 epoch 3
+Epoch 4/30
+Train Loss: 0.1278 | Train F1: 0.8495 | Train mAP: 0.9175 | Train Acc: 0.8047               
+Val Loss: 0.1170 | Val F1: 0.8616 | Val mAP: 0.9208 | Val Acc: 0.8200
+保存最佳模型于 epoch 4
+Epoch 5/30
+Train Loss: 0.1072 | Train F1: 0.8751 | Train mAP: 0.9326 | Train Acc: 0.8343               
+Val Loss: 0.1140 | Val F1: 0.8686 | Val mAP: 0.9238 | Val Acc: 0.8267
+保存最佳模型于 epoch 5
+Epoch 6/30
+Train Loss: 0.0913 | Train F1: 0.8965 | Train mAP: 0.9494 | Train Acc: 0.8560               
+Val Loss: 0.1175 | Val F1: 0.8742 | Val mAP: 0.9231 | Val Acc: 0.8200
+保存最佳模型于 epoch 6
+Epoch 7/30
+Train Loss: 0.0809 | Train F1: 0.9057 | Train mAP: 0.9628 | Train Acc: 0.8697               
+Val Loss: 0.1131 | Val F1: 0.8794 | Val mAP: 0.9334 | Val Acc: 0.8317
+保存最佳模型于 epoch 7
+Epoch 8/30
+Train Loss: 0.0715 | Train F1: 0.9212 | Train mAP: 0.9718 | Train Acc: 0.8853               
+Val Loss: 0.1199 | Val F1: 0.8713 | Val mAP: 0.9242 | Val Acc: 0.8367
+Epoch 9/30
+Train Loss: 0.0612 | Train F1: 0.9332 | Train mAP: 0.9795 | Train Acc: 0.8963               
+Val Loss: 0.1253 | Val F1: 0.8661 | Val mAP: 0.9238 | Val Acc: 0.8300
+Epoch 10/30
+Train Loss: 0.0527 | Train F1: 0.9421 | Train mAP: 0.9823 | Train Acc: 0.9147               
+Val Loss: 0.1196 | Val F1: 0.8771 | Val mAP: 0.9294 | Val Acc: 0.8383
+Epoch 11/30
+Train Loss: 0.0442 | Train F1: 0.9519 | Train mAP: 0.9875 | Train Acc: 0.9300               
+Val Loss: 0.1312 | Val F1: 0.8660 | Val mAP: 0.9226 | Val Acc: 0.8333
+Epoch 12/30
+Train Loss: 0.0404 | Train F1: 0.9584 | Train mAP: 0.9907 | Train Acc: 0.9340               
+Val Loss: 0.1333 | Val F1: 0.8655 | Val mAP: 0.9224 | Val Acc: 0.8317
+Epoch 13/30
+Epoch    13: reducing learning rate of group 0 to 1.0000e-05.                               
+Train Loss: 0.0362 | Train F1: 0.9598 | Train mAP: 0.9918 | Train Acc: 0.9403
+Val Loss: 0.1271 | Val F1: 0.8708 | Val mAP: 0.9253 | Val Acc: 0.8350
+Epoch 14/30
+Train Loss: 0.0312 | Train F1: 0.9720 | Train mAP: 0.9960 | Train Acc: 0.9510               
+Val Loss: 0.1300 | Val F1: 0.8705 | Val mAP: 0.9255 | Val Acc: 0.8333
+Epoch 15/30
+Train Loss: 0.0300 | Train F1: 0.9736 | Train mAP: 0.9956 | Train Acc: 0.9557               
+Val Loss: 0.1288 | Val F1: 0.8692 | Val mAP: 0.9270 | Val Acc: 0.8383
+Epoch 16/30
+Train Loss: 0.0286 | Train F1: 0.9749 | Train mAP: 0.9959 | Train Acc: 0.9567               
+Val Loss: 0.1309 | Val F1: 0.8720 | Val mAP: 0.9253 | Val Acc: 0.8433
+Epoch 17/30
+Train Loss: 0.0293 | Train F1: 0.9712 | Train mAP: 0.9961 | Train Acc: 0.9520               
+Val Loss: 0.1293 | Val F1: 0.8707 | Val mAP: 0.9260 | Val Acc: 0.8400
+早停
+训练完成。最佳验证 F1 分数: 0.8794 在 epoch 7
+损失曲线已保存
+mAP 曲线已保存
+
+```
+
+训练过程一共持续了17个Epoch，在第7个Epoch时已经有较好性能，为了防止过拟合，我们引入的早停机制在第17个Epoch上停止了训练，选取F1分数最高的批次`Epoch7`作为最终的模型
+
+这是最终的loss曲线和map曲线：
+![Loss曲线图](checkpoints/loss_curve.png)
+![map曲线图](checkpoints/map_curve.png)
+
+### 更新Threshold过程
+
+在`evaluate.py`中我们在验证集上动态更新了Threshold
+
+| Class                  | Threshold | P      | R      | F1     | AP     |
+|------------------------|-----------|--------|--------|--------|--------|
+| scab                   | 0.6000    | 0.9157 | 0.8636 | 0.8889 | 0.9507 |
+| healthy                | 0.7000    | 0.9650 | 0.9718 | 0.9684 | 0.9902 |
+| frog_eye_leaf_spot     | 0.4000    | 0.8481 | 0.9054 | 0.8758 | 0.9463 |
+| rust                   | 0.4000    | 0.9167 | 0.9296 | 0.9231 | 0.9655 |
+| complex                | 0.3000    | 0.8163 | 0.6349 | 0.7143 | 0.7567 |
+| powdery_mildew         | 0.5000    | 0.9767 | 0.9767 | 0.9767 | 0.9908 |
+| macro-all              | N/A       | 0.9064 | 0.8804 | 0.8912 | 0.9334 |
+| micro-all              | N/A       | 0.9065 | 0.8896 | 0.8980 | 0.9500 |
+
+### 测试结果
+ 
+我们使用更新后的最优阈值，在测试集上进行测试，得到了这样的结果
+
+| Class                  | Threshold | P      | R      | F1     | AP     |
+|------------------------|-----------|--------|--------|--------|--------|
+| scab                   | 0.6000    | 0.9353 | 0.8368 | 0.8833 | 0.9573 |
+| healthy                | 0.7000    | 0.9722 | 0.9655 | 0.9689 | 0.9927 |
+| frog_eye_leaf_spot     | 0.4000    | 0.8000 | 0.8732 | 0.8350 | 0.9312 |
+| rust                   | 0.4000    | 0.8904 | 0.9420 | 0.9155 | 0.9586 |
+| complex                | 0.3000    | 0.5932 | 0.5556 | 0.5738 | 0.6198 |
+| powdery_mildew         | 0.5000    | 0.8529 | 0.8529 | 0.8529 | 0.9514 |
+| macro-all              | N/A       | 0.8407 | 0.8377 | 0.8382 | 0.9018 |
+| micro-all              | N/A       | 0.8693 | 0.8585 | 0.8638 | 0.9456 |
+
+做出如下的折线图
+
+![各类别折线图](image.png)
+
+## 改进
+
+可以看到`Complex`类效果不是很好，尝试为类别增加权重来更新优化，后续更新...
