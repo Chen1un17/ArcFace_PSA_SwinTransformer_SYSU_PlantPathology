@@ -14,8 +14,17 @@ from model import get_model
 from utils import calculate_metrics, save_checkpoint
 
 from torch.cuda.amp import autocast, GradScaler
+import torch.nn.functional as F
 
-def train_epoch(model, loader, criterion, optimizer, device, scaler):
+def train_epoch(model, loader, criterion, optimizer, device, scaler, max_grad_norm=1.0):
+    """
+    单个训练周期的逻辑：
+    - 将模型置于训练模式
+    - 对每个批次的数据进行前向传播、计算损失并反向传播更新参数
+    - 使用混合精度加速计算
+    - 引入梯度裁剪以防止梯度爆炸
+    - 累积损失和预测结果，用于后续计算F1、Accuracy、mAP等指标
+    """
     model.train()
     running_loss = 0.0
     all_targets = []
@@ -32,6 +41,11 @@ def train_epoch(model, loader, criterion, optimizer, device, scaler):
             loss = criterion(outputs, labels)
 
         scaler.scale(loss).backward()
+
+        # 引入梯度裁剪
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+
         scaler.step(optimizer)
         scaler.update()
 
@@ -43,9 +57,15 @@ def train_epoch(model, loader, criterion, optimizer, device, scaler):
     all_targets = np.vstack(all_targets)
     all_outputs = np.vstack(all_outputs)
     f1, accuracy, map_score = calculate_metrics(all_outputs, all_targets)  
-    return epoch_loss, f1, accuracy, map_score  
+    return epoch_loss, f1, accuracy, map_score
 
 def eval_epoch(model, loader, criterion, device):
+    """
+    单个验证/评估周期的逻辑：
+    - 将模型置于评估模式
+    - 不进行反向传播，仅计算输出和损失
+    - 统计整体损失和预测结果，用于计算验证集上的F1、Accuracy、mAP指标
+    """
     model.eval()
     running_loss = 0.0
     all_targets = []
@@ -66,11 +86,21 @@ def eval_epoch(model, loader, criterion, device):
     epoch_loss = running_loss / len(loader.dataset)
     all_targets = np.vstack(all_targets)
     all_outputs = np.vstack(all_outputs)
-    f1, accuracy, map_score = calculate_metrics(all_outputs, all_targets)  # Modified to include mAP
-    return epoch_loss, f1, accuracy, map_score  # Modified to return mAP
+    f1, accuracy, map_score = calculate_metrics(all_outputs, all_targets) 
+    return epoch_loss, f1, accuracy, map_score
 
 def main():
-    # 配置参数
+    """
+    主函数流程：
+    1. 配置参数和路径
+    2. 创建数据集和数据加载器
+    3. 初始化模型（可通过model_name选择使用Swin或EfficientNet）
+    4. 使用BCEWithLogitsLoss作为损失函数
+    5. 训练和验证模型，使用CosineAnnealingLR调整学习率并使用早停机制防止过拟合
+    6. 记录训练和验证过程中损失与mAP，并最终保存曲线图
+    """
+
+    # 配置参数与路径
     data_dir = '/home/visllm/program/plant/Project/data'  
     train_csv = os.path.join(data_dir, 'processed_train_labels.csv')  
     val_csv = os.path.join(data_dir, 'processed_val_labels.csv')
@@ -84,21 +114,27 @@ def main():
     num_epochs = 30
     learning_rate = 1e-4
     num_classes = 6
-    checkpoint_dir = os.path.join(data_dir, '../checkpoints')  # 更新为检查点存储路径
+    checkpoint_dir = os.path.join(data_dir, '../checkpoints_enhanced')
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # 数据预处理
+    # 在这里选择使用哪个模型架构
+    # 'original' 表示使用EfficientNet，'swin'表示使用Swin Transformer，'mambaout'表示使用本地EVA模型
+    model_name = 'mambaout'
+
+    # 调整数据增强策略，避免过度变形
     train_transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize((224, 224)),    
         transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(15),
+        transforms.RandomRotation(15),  
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+        transforms.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1)),  # 调整仿射变换参数
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225]),
     ])
 
     val_transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize((224, 224)),    
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225]),
@@ -111,16 +147,18 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
-    # 初始化模型、损失函数和优化器
-    device = torch.device("cuda:1")
-    model = get_model(num_classes=num_classes, pretrained=True)
+    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+    model = get_model(num_classes=num_classes, pretrained=False, model_name=model_name)  # pretrained=False 因为从本地加载
     model = model.to(device)
 
+    # 使用BCEWithLogitsLoss作为损失函数
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
 
-    # 初始化混合精度 scaler
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+    # 使用CosineAnnealingLR作为学习率调度器
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
+
     scaler = GradScaler()
 
     best_val_f1 = 0.0
@@ -128,22 +166,21 @@ def main():
     patience = 10
     counter = 0
 
-    # 初始化记录变量
     train_losses = []
     val_losses = []
     train_maps = []
     val_maps = []
 
-    # 训练循环
+    # 开始训练循环
     for epoch in range(1, num_epochs + 1):
         print(f"Epoch {epoch}/{num_epochs}")
 
         train_loss, train_f1, train_acc, train_map = train_epoch(model, train_loader, criterion, optimizer, device, scaler)
         val_loss, val_f1, val_acc, val_map = eval_epoch(model, val_loader, criterion, device)
 
-        scheduler.step(val_loss)
+        # 调度器步进
+        scheduler.step()
 
-        # 记录指标
         train_losses.append(train_loss)
         val_losses.append(val_loss)
         train_maps.append(train_map)
@@ -152,7 +189,7 @@ def main():
         print(f"Train Loss: {train_loss:.4f} | Train F1: {train_f1:.4f} | Train mAP: {train_map:.4f} | Train Acc: {train_acc:.4f}")
         print(f"Val Loss: {val_loss:.4f} | Val F1: {val_f1:.4f} | Val mAP: {val_map:.4f} | Val Acc: {val_acc:.4f}")
 
-        # 早停机制
+        # 早停和保存最佳模型
         if val_f1 > best_val_f1:
             best_val_f1 = val_f1
             best_epoch = epoch
@@ -160,7 +197,7 @@ def main():
             checkpoint_path = os.path.join(checkpoint_dir, 'best_model.pth')
             save_checkpoint({
                 'epoch': epoch,
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': val_loss,
             }, filename=checkpoint_path)
@@ -173,13 +210,11 @@ def main():
 
     print(f"训练完成。最佳验证 F1 分数: {best_val_f1:.4f} 在 epoch {best_epoch}")
 
-    # 生成并保存曲线图
-    epochs = range(1, best_epoch + 1)
-
-    # 绘制损失曲线
+    # 绘制并保存损失曲线
+    epochs_range = range(1, best_epoch + 1)
     plt.figure(figsize=(10,5))
-    plt.plot(epochs, train_losses[:best_epoch], 'b-', label='Train Loss')
-    plt.plot(epochs, val_losses[:best_epoch], 'r-', label='Val Loss')
+    plt.plot(epochs_range, train_losses[:best_epoch], 'b-', label='Train Loss')
+    plt.plot(epochs_range, val_losses[:best_epoch], 'r-', label='Val Loss')
     plt.title('Training and Validation Loss')
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
@@ -189,10 +224,10 @@ def main():
     plt.close()
     print(f"损失曲线已保存到 {loss_curve_path}")
 
-    # 绘制 mAP 曲线
+    # 绘制并保存mAP曲线
     plt.figure(figsize=(10,5))
-    plt.plot(epochs, train_maps[:best_epoch], 'b-', label='Train mAP')
-    plt.plot(epochs, val_maps[:best_epoch], 'r-', label='Val mAP')
+    plt.plot(epochs_range, train_maps[:best_epoch], 'b-', label='Train mAP')
+    plt.plot(epochs_range, val_maps[:best_epoch], 'r-', label='Val mAP')
     plt.title('Training and Validation mAP')
     plt.xlabel('Epochs')
     plt.ylabel('mAP')

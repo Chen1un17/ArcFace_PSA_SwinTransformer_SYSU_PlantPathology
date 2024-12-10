@@ -4,7 +4,7 @@ import cv2
 
 from torchvision.transforms import Compose, Normalize
 
-device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
 
 image_net_mean = torch.Tensor([0.485, 0.456, 0.406])
 image_net_std = torch.Tensor([0.229, 0.224, 0.225])

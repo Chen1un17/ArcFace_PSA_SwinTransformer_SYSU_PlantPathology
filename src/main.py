@@ -1,8 +1,11 @@
 # src/main.py
+import os
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 import argparse
 from train import main as train_main
 from evaluate import main as evaluate_main
 from generate_submission import main as generate_submission_main
+os.environ["HF_HUB_OFFLINE"] = "False"
 
 def main():
     parser = argparse.ArgumentParser(description='Plant Pathology EfficientNet Training Pipeline')

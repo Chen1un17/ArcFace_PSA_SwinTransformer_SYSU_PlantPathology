@@ -5,19 +5,35 @@ from sklearn.metrics import f1_score, accuracy_score
 
 from sklearn.metrics import f1_score, accuracy_score, average_precision_score
 
+# utils.py
+from sklearn.metrics import f1_score, accuracy_score, average_precision_score
+import numpy as np
+
 def calculate_metrics(outputs, targets, threshold=0.5):
-    preds = (outputs > threshold).astype(int)
+    """
+    计算 F1 分数、准确率和平均精度均值 (mAP)。
 
-    # ���� F1 ����
-    f1 = f1_score(targets, preds, average='macro')
+    参数:
+        outputs (numpy.ndarray): 模型的输出概率，形状为 (num_samples, num_classes)
+        targets (numpy.ndarray): 真实标签，形状为 (num_samples, num_classes)
+        threshold (float or list): 将概率转换为二进制预测的阈值，可以是单个值或每个类别的列表
 
-    # ����׼ȷ��
+    返回:
+        f1 (float): F1 分数 (macro)
+        accuracy (float): 准确率
+        map_score (float): 平均精度均值 (mAP) (macro)
+    """
+    if isinstance(threshold, list):
+        preds = (outputs > np.array(threshold)).astype(int)
+    else:
+        preds = (outputs > threshold).astype(int)
+
+    f1 = f1_score(targets, preds, average='macro', zero_division=0)
     accuracy = accuracy_score(targets, preds)
-
-    # ����ƽ�����Ⱦ�ֵ (mAP)
     map_score = average_precision_score(targets, outputs, average='macro')
 
     return f1, accuracy, map_score
+
 
 
 def save_checkpoint(state, filename='checkpoint.pth'):
@@ -29,7 +45,7 @@ def load_checkpoint(model, optimizer, filename='checkpoint.pth'):
     epoch = checkpoint['epoch']
     loss = checkpoint['loss']
 
-    # ��optimizer��Ϊ����checkpoint����optimizer_state_dict�ų��Լ���
+    # 当optimizer不为空且checkpoint中有optimizer_state_dict才尝试加载
     if optimizer is not None and 'optimizer_state_dict' in checkpoint:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 

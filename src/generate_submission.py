@@ -36,7 +36,7 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
     # 初始化模型
-    device = torch.device("cuda:1")
+    device = torch.device("cuda:3")
     model = get_model(num_classes=num_classes, pretrained=False)
     model = model.to(device)
 
