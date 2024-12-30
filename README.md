@@ -8,7 +8,7 @@
 在自己的运行目录下
 
 ```bash
-git clone https://github.com/Chen1un17/VIS-EfficientNet-EVA-CLIP.git
+git clone https://github.com/Chen1un17/ArcFace_PSA_SwinTransformer.git
 conda create -n vis python=3.8
 conda activate vis
 pip install -r requirements.txt
@@ -72,6 +72,11 @@ python src/visualize.py
 
 python src/attentionvis.py
 
+```
+
+对ArcPSASwinTransformer进行可视化
+```bash
+python src/arcvis.py
 ```
 
 生成的可视化 GIF 文件将保存在 `outputs/example.gif`

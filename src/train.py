@@ -1,241 +1,483 @@
 import os
 import time
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchvision import transforms
+from torchvision.transforms import RandAugment, InterpolationMode
 import pandas as pd
-import numpy as np
 from tqdm import tqdm
-import matplotlib.pyplot as plt  
+import matplotlib.pyplot as plt
+from torch.cuda.amp import autocast, GradScaler
+import torch.nn.functional as F
+from collections import defaultdict
 
 from dataset import PlantPathologyDataset
 from model import get_model
-from utils import calculate_metrics, save_checkpoint
+from utils import calculate_metrics, save_checkpoint, calculate_batch_accuracy, set_seed
+from lossfunction import FocalBCELoss, MultiLabelArcFaceLoss
 
-from torch.cuda.amp import autocast, GradScaler
-import torch.nn.functional as F
-
-def train_epoch(model, loader, criterion, optimizer, device, scaler, max_grad_norm=1.0):
+def get_transforms(resize_size, is_training=True):
     """
-    单个训练周期的逻辑：
-    - 将模型置于训练模式
-    - 对每个批次的数据进行前向传播、计算损失并反向传播更新参数
-    - 使用混合精度加速计算
-    - 引入梯度裁剪以防止梯度爆炸
-    - 累积损失和预测结果，用于后续计算F1、Accuracy、mAP等指标
+    获取数据增强策略。对于训练集，使用 RandAugment 进行自动数据增强。
+    参数:
+        resize_size: 图像调整的目标大小
+        is_training: 是否是训练模式
+    """
+    if is_training:
+        return transforms.Compose([
+            transforms.Resize((resize_size, resize_size)),
+            RandAugment(num_ops=2, magnitude=9),  # 使用正确的参数名称
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                              std=[0.229, 0.224, 0.225])
+        ])
+    else:
+        return transforms.Compose([
+            transforms.Resize((resize_size, resize_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                              std=[0.229, 0.224, 0.225])
+        ])
+
+def tta_inference(model, image, device):
+    """
+    测试时增强(TTA)实现。
+    
+    返回多个增强版本的平均特征向量，而不是直接的预测结果。
+    """
+    model.eval()
+    features_list = []
+    
+    transforms_list = [
+        lambda x: x,  # 原始图像
+        lambda x: torch.flip(x, dims=[3]),  # 水平翻转
+        lambda x: torch.flip(x, dims=[2]),  # 垂直翻转
+        lambda x: torch.rot90(x, k=1, dims=[2, 3])  # 90度旋转
+    ]
+    
+    with torch.no_grad():
+        for transform in transforms_list:
+            transformed_image = transform(image)
+            # 直接获取特征向量
+            features = model(transformed_image)
+            features_list.append(features)
+    
+    # 返回平均特征向量
+    return torch.stack(features_list).mean(dim=0)
+
+def train_epoch(model, loader, criterion, optimizer, device, scaler, accumulation_steps=2):
+    """
+    训练一个epoch，使用混合精度训练和梯度累积来提高效率。
     """
     model.train()
     running_loss = 0.0
+    
+    # 初始化每个类别的准确率统计（假设6个类别）
+    running_class_accuracies = np.zeros(6)
+    num_batches = 0
+    
     all_targets = []
     all_outputs = []
-
-    for images, labels in tqdm(loader, desc="Training", leave=False):
+    
+    optimizer.zero_grad()
+    progress_bar = tqdm(loader, desc="Training")
+    
+    for idx, (images, labels) in enumerate(progress_bar):
         images = images.to(device)
         labels = labels.to(device)
-
-        optimizer.zero_grad()
-
+        
+        # 混合精度训练
         with autocast():
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-
+            # 注意：model 输出的是特征向量，而不是 logits
+            features = model(images)
+            # criterion: MultiLabelArcFaceLoss(features, labels) => (loss, logits)
+            loss, logits = criterion(features, labels)
+            # 为了梯度累积，对 loss 做平均
+            loss = loss / accumulation_steps
+        
+        # 反向传播
         scaler.scale(loss).backward()
-
-        # 引入梯度裁剪
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-
-        scaler.step(optimizer)
-        scaler.update()
-
-        running_loss += loss.item() * images.size(0)
+        
+        # 梯度累积判断
+        if (idx + 1) % accumulation_steps == 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+        
+        # ---- 准确率计算：对 logits 做 sigmoid ----
+        # 只有经过 sigmoid 才能阈值分割多标签
+        probs = torch.sigmoid(logits)
+        
+        # 计算每个类别的准确率
+        batch_class_accuracies, batch_overall_accuracy = calculate_batch_accuracy(
+            probs, labels
+        )
+        running_class_accuracies += batch_class_accuracies
+        num_batches += 1
+        
+        # 累积loss（要用加回 *images.size(0) 还原之前除的 accumulation_steps）
+        running_loss += loss.item() * accumulation_steps * images.size(0)
+        
         all_targets.append(labels.detach().cpu().numpy())
-        all_outputs.append(torch.sigmoid(outputs).detach().cpu().numpy())
-
+        all_outputs.append(probs.detach().cpu().numpy())
+        
+        # 更新进度条信息
+        progress_info = {
+            'loss': f'{loss.item():.4f}',
+            'avg_acc': f'{batch_overall_accuracy:.4f}'
+        }
+        for i, acc in enumerate(batch_class_accuracies):
+            progress_info[f'c{i}_acc'] = f'{acc:.2f}'
+        progress_bar.set_postfix(progress_info)
+    
+    # 计算 epoch 级别指标
     epoch_loss = running_loss / len(loader.dataset)
     all_targets = np.vstack(all_targets)
     all_outputs = np.vstack(all_outputs)
-    f1, accuracy, map_score = calculate_metrics(all_outputs, all_targets)  
-    return epoch_loss, f1, accuracy, map_score
+    
+    # 计算f1、mAP等
+    f1_score, _, map_score = calculate_metrics(all_outputs, all_targets)
+    
+    # 计算每个类别平均准确率
+    class_accuracies = running_class_accuracies / num_batches
+    overall_accuracy = np.mean(class_accuracies)
+    
+    return {
+        'loss': epoch_loss,
+        'accuracy': overall_accuracy,
+        'class_accuracies': class_accuracies.tolist(),
+        'f1': f1_score,
+        'map': map_score
+    }
 
-def eval_epoch(model, loader, criterion, device):
+def eval_epoch(model, loader, criterion, device, use_tta=False):
     """
-    单个验证/评估周期的逻辑：
-    - 将模型置于评估模式
-    - 不进行反向传播，仅计算输出和损失
-    - 统计整体损失和预测结果，用于计算验证集上的F1、Accuracy、mAP指标
+    验证一个epoch，支持测试时增强(TTA)。
     """
     model.eval()
     running_loss = 0.0
+    running_class_accuracies = np.zeros(6)
+    num_batches = 0
+    
     all_targets = []
     all_outputs = []
-
+    
     with torch.no_grad():
-        for images, labels in tqdm(loader, desc="Evaluating", leave=False):
+        progress_bar = tqdm(loader, desc="Evaluating")
+        for images, labels in progress_bar:
             images = images.to(device)
             labels = labels.to(device)
-
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-
+            
+            # 获取特征向量
+            if use_tta:
+                features = tta_inference(model, images, device)
+            else:
+                features = model(images)
+            
+            # ArcFace Loss => (loss, logits)
+            loss, logits = criterion(features, labels)
+            
+            # 多标签推理：要对 logits 做 sigmoid
+            probs = torch.sigmoid(logits)
+            
+            # 计算准确率
+            batch_class_accuracies, batch_overall_accuracy = calculate_batch_accuracy(
+                probs, labels
+            )
+            
+            running_class_accuracies += batch_class_accuracies
+            num_batches += 1
+            
             running_loss += loss.item() * images.size(0)
-            all_targets.append(labels.detach().cpu().numpy())
-            all_outputs.append(torch.sigmoid(outputs).detach().cpu().numpy())
-
+            
+            all_targets.append(labels.cpu().numpy())
+            all_outputs.append(probs.cpu().numpy())  # 保存已经 sigmoid 后的概率
+            
+            progress_info = {
+                'loss': f'{loss.item():.4f}',
+                'avg_acc': f'{batch_overall_accuracy:.4f}'
+            }
+            for i, acc in enumerate(batch_class_accuracies):
+                progress_info[f'c{i}_acc'] = f'{acc:.2f}'
+            progress_bar.set_postfix(progress_info)
+    
     epoch_loss = running_loss / len(loader.dataset)
     all_targets = np.vstack(all_targets)
     all_outputs = np.vstack(all_outputs)
-    f1, accuracy, map_score = calculate_metrics(all_outputs, all_targets) 
-    return epoch_loss, f1, accuracy, map_score
+    
+    # 计算评估指标
+    f1_score, _, map_score = calculate_metrics(all_outputs, all_targets)
+    
+    class_accuracies = running_class_accuracies / num_batches
+    overall_accuracy = np.mean(class_accuracies)
+    
+    return {
+        'loss': epoch_loss,
+        'accuracy': overall_accuracy,
+        'class_accuracies': class_accuracies.tolist(),
+        'f1': f1_score,
+        'map': map_score
+    }
+
+def plot_training_history(history, save_dir):
+    """
+    绘制训练历史曲线，包括整体和每个类别的指标。
+    
+    该函数创建两组图表：
+    1. 整体指标图表（损失、平均准确率、F1分数和mAP）
+    2. 每个类别的准确率图表（可选）
+    """
+    # 基础指标绘图
+    basic_metrics = ['loss', 'f1', 'map']
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    
+    # 绘制基础指标
+    for idx, metric in enumerate(basic_metrics):
+        ax = axes[idx//2, idx%2]
+        ax.plot(history[f'train_{metric}'], label='Train')
+        ax.plot(history[f'val_{metric}'], label='Validation')
+        ax.set_title(f'{metric.upper()} Curves')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel(metric.upper())
+        ax.legend()
+        ax.grid(True)
+    
+    # 绘制平均准确率
+    ax = axes[1, 1]
+    if isinstance(history['train_accuracy'][0], list):
+        # accuracy是类别准确率的列表，计算平均值
+        train_avg_acc = [np.mean(accs) for accs in history['train_accuracy']]
+        val_avg_acc = [np.mean(accs) for accs in history['val_accuracy']]
+        ax.plot(train_avg_acc, label='Train')
+        ax.plot(val_avg_acc, label='Validation')
+    else:
+        # 如果是单个准确率值
+        ax.plot(history['train_accuracy'], label='Train')
+        ax.plot(history['val_accuracy'], label='Validation')
+    ax.set_title('Average Accuracy Curves')
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Accuracy')
+    ax.legend()
+    ax.grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, 'training_curves.png'), dpi=300)
+    plt.close()
+    
+    # 绘制每个类别的准确率曲线
+    if isinstance(history['train_accuracy'][0], list):
+        class_names = ['scab', 'healthy', 'frog_eye_leaf_spot', 
+                      'rust', 'complex', 'powdery_mildew']
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+        axes = axes.flatten()
+        
+        for idx, class_name in enumerate(class_names):
+            ax = axes[idx]
+            train_class_acc = [acc[idx] for acc in history['train_accuracy']]
+            val_class_acc = [acc[idx] for acc in history['val_accuracy']]
+            ax.plot(train_class_acc, label='Train')
+            ax.plot(val_class_acc, label='Validation')
+            ax.set_title(f'{class_name} Accuracy')
+            ax.set_xlabel('Epoch')
+            ax.set_ylabel('Accuracy')
+            ax.legend()
+            ax.grid(True)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, 'class_accuracy_curves.png'), dpi=300)
+        plt.close()
 
 def main():
-    """
-    主函数流程：
-    1. 配置参数和路径
-    2. 创建数据集和数据加载器
-    3. 初始化模型（可通过model_name选择使用Swin或EfficientNet）
-    4. 使用BCEWithLogitsLoss作为损失函数
-    5. 训练和验证模型，使用CosineAnnealingLR调整学习率并使用早停机制防止过拟合
-    6. 记录训练和验证过程中损失与mAP，并最终保存曲线图
-    """
-
+    """主训练函数"""
+    # 设置随机种子
+    set_seed(42)
+    
     # 配置参数与路径
-    data_dir = '/home/visllm/program/plant/Project/data'  
-    train_csv = os.path.join(data_dir, 'processed_train_labels.csv')  
+    data_dir = '/home/visllm/program/plant/Project/data'
+    train_csv = os.path.join(data_dir, 'processed_train_labels.csv')
     val_csv = os.path.join(data_dir, 'processed_val_labels.csv')
-    test_csv = os.path.join(data_dir, 'processed_test_labels.csv')
-
     train_images = os.path.join(data_dir, 'train', 'images')
     val_images = os.path.join(data_dir, 'val', 'images')
-    test_images = os.path.join(data_dir, 'test', 'images') 
-
-    batch_size = 32
+    
+    # 训练参数
+    batch_size = 16
     num_epochs = 30
     learning_rate = 1e-4
     num_classes = 6
-    checkpoint_dir = os.path.join(data_dir, '../checkpoints_enhanced')
+    accumulation_steps = 2
+    resize_size = 384
+    
+    # 创建实验目录
+    checkpoint_dir = os.path.join(data_dir, f'../checkpoints_swin_enhanced_arcface')
     os.makedirs(checkpoint_dir, exist_ok=True)
-
-    # 在这里选择使用哪个模型架构
-    # 'original' 表示使用EfficientNet，'swin'表示使用Swin Transformer，'mambaout'表示使用本地EVA模型
-    model_name = 'mambaout'
-
-    # 调整数据增强策略，避免过度变形
-    train_transform = transforms.Compose([
-        transforms.Resize((224, 224)),    
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(15),  
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
-        transforms.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1)),  # 调整仿射变换参数
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225]),
-    ])
-
-    val_transform = transforms.Compose([
-        transforms.Resize((224, 224)),    
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225]),
-    ])
-
-    # 创建数据集和数据加载器
-    train_dataset = PlantPathologyDataset(csv_file=train_csv, images_dir=train_images, transform=train_transform)
-    val_dataset = PlantPathologyDataset(csv_file=val_csv, images_dir=val_images, transform=val_transform)
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-
-    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
-    model = get_model(num_classes=num_classes, pretrained=False, model_name=model_name)  # pretrained=False 因为从本地加载
+    
+    # 准备数据加载器
+    train_dataset = PlantPathologyDataset(
+        csv_file=train_csv,
+        images_dir=train_images,
+        transform=get_transforms(resize_size, is_training=True)
+    )
+    
+    val_dataset = PlantPathologyDataset(
+        csv_file=val_csv,
+        images_dir=val_images,
+        transform=get_transforms(resize_size, is_training=False)
+    )
+    
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True
+    )
+    
+    # 初始化模型和训练组件
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    model = get_model(
+        num_classes=num_classes,
+        pretrained=True,
+        model_name='swinv2',
+        use_arcface=True,  # 启用 ArcFace
+        feature_dim=512    # 设置特征维度
+    )
     model = model.to(device)
+    
+    criterion = MultiLabelArcFaceLoss(
+        in_features=512,  # 特征维度
+        num_classes=num_classes,
+        scale=30.0,
+        margin=0.5
+    ).to(device)
 
-    # 使用BCEWithLogitsLoss作为损失函数
-    criterion = nn.BCEWithLogitsLoss()
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-    # 使用CosineAnnealingLR作为学习率调度器
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
-
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=learning_rate,
+        weight_decay=0.05
+    )
+    
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=learning_rate,
+        epochs=num_epochs,
+        steps_per_epoch=len(train_loader),
+        pct_start=0.1,
+        div_factor=10,
+        final_div_factor=100
+    )
+    
     scaler = GradScaler()
-
+    
+    # 训练状态变量
     best_val_f1 = 0.0
     best_epoch = 0
-    patience = 10
+    patience = 5
     counter = 0
-
-    train_losses = []
-    val_losses = []
-    train_maps = []
-    val_maps = []
-
-    # 开始训练循环
+    history = defaultdict(list)
+    
+    # 训练循环
     for epoch in range(1, num_epochs + 1):
-        print(f"Epoch {epoch}/{num_epochs}")
-
-        train_loss, train_f1, train_acc, train_map = train_epoch(model, train_loader, criterion, optimizer, device, scaler)
-        val_loss, val_f1, val_acc, val_map = eval_epoch(model, val_loader, criterion, device)
-
-        # 调度器步进
+        print(f"\nEpoch {epoch}/{num_epochs}")
+        
+        # 训练和验证
+        train_metrics = train_epoch(model, train_loader, criterion, optimizer, 
+                                  device, scaler, accumulation_steps)
+        val_metrics = eval_epoch(model, val_loader, criterion, device, use_tta=True)
+        
+        # 更新学习率
         scheduler.step()
-
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
-        train_maps.append(train_map)
-        val_maps.append(val_map)
-
-        print(f"Train Loss: {train_loss:.4f} | Train F1: {train_f1:.4f} | Train mAP: {train_map:.4f} | Train Acc: {train_acc:.4f}")
-        print(f"Val Loss: {val_loss:.4f} | Val F1: {val_f1:.4f} | Val mAP: {val_map:.4f} | Val Acc: {val_acc:.4f}")
-
-        # 早停和保存最佳模型
-        if val_f1 > best_val_f1:
-            best_val_f1 = val_f1
+        
+        # 记录指标
+        for phase in ['train', 'val']:
+            metrics = train_metrics if phase == 'train' else val_metrics
+            for metric_name, value in metrics.items():
+                history[f'{phase}_{metric_name}'].append(value)
+        
+        # 打印当前结果
+        print(f"Train - Loss: {train_metrics['loss']:.4f}, F1: {train_metrics['f1']:.4f}, "
+              f"Acc: {train_metrics['accuracy']:.4f}, mAP: {train_metrics['map']:.4f}")
+        print(f"Val - Loss: {val_metrics['loss']:.4f}, F1: {val_metrics['f1']:.4f}, "
+              f"Acc: {val_metrics['accuracy']:.4f}, mAP: {val_metrics['map']:.4f}")
+        
+        # 模型保存和早停
+        if val_metrics['f1'] > best_val_f1:
+            best_val_f1 = val_metrics['f1']
             best_epoch = epoch
             counter = 0
-            checkpoint_path = os.path.join(checkpoint_dir, 'best_model.pth')
             save_checkpoint({
                 'epoch': epoch,
-                'model_state_dict': model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict(),
+                'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'loss': val_loss,
-            }, filename=checkpoint_path)
-            print(f"保存最佳模型于 epoch {epoch}")
+                'scheduler_state_dict': scheduler.state_dict(),
+                'metrics': val_metrics,
+                'best_val_f1': best_val_f1,
+            }, os.path.join(checkpoint_dir, 'best_model.pth'))
+            print(f"Saved best model (epoch {epoch})")
         else:
             counter += 1
             if counter >= patience:
-                print("早停")
+                print("Early stopping triggered")
                 break
-
-    print(f"训练完成。最佳验证 F1 分数: {best_val_f1:.4f} 在 epoch {best_epoch}")
-
-    # 绘制并保存损失曲线
-    epochs_range = range(1, best_epoch + 1)
-    plt.figure(figsize=(10,5))
-    plt.plot(epochs_range, train_losses[:best_epoch], 'b-', label='Train Loss')
-    plt.plot(epochs_range, val_losses[:best_epoch], 'r-', label='Val Loss')
-    plt.title('Training and Validation Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-    loss_curve_path = os.path.join(checkpoint_dir, 'loss_curve.png')
-    plt.savefig(loss_curve_path)
-    plt.close()
-    print(f"损失曲线已保存到 {loss_curve_path}")
-
-    # 绘制并保存mAP曲线
-    plt.figure(figsize=(10,5))
-    plt.plot(epochs_range, train_maps[:best_epoch], 'b-', label='Train mAP')
-    plt.plot(epochs_range, val_maps[:best_epoch], 'r-', label='Val mAP')
-    plt.title('Training and Validation mAP')
-    plt.xlabel('Epochs')
-    plt.ylabel('mAP')
-    plt.legend()
-    map_curve_path = os.path.join(checkpoint_dir, 'map_curve.png')
-    plt.savefig(map_curve_path)
-    plt.close()
-    print(f"mAP 曲线已保存到 {map_curve_path}")
+        
+        # 定期保存检查点和最后几个epoch的模型
+        if epoch % 10 == 0 or epoch > num_epochs - 5:
+            save_checkpoint({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'metrics': val_metrics,
+            }, os.path.join(checkpoint_dir, f'model_epoch_{epoch}.pth'))
+    
+    # 训练结束后的工作
+    # 1. 保存训练历史图表
+    plot_training_history(history, checkpoint_dir)
+    
+    # 2. 保存训练配置和结果
+    config_file = os.path.join(checkpoint_dir, 'training_config.txt')
+    with open(config_file, 'w') as f:
+        f.write("Training Configuration and Results\n")
+        f.write("================================\n")
+        f.write(f"Model: Swin Transformer V2\n")
+        f.write(f"Image Size: {resize_size}x{resize_size}\n")
+        f.write(f"Batch Size: {batch_size}\n")
+        f.write(f"Learning Rate: {learning_rate}\n")
+        f.write(f"Number of Epochs: {epoch}\n")
+        f.write(f"Best Validation F1: {best_val_f1:.4f} (Epoch {best_epoch})\n")
+        f.write(f"\nFinal Validation Metrics:\n")
+        for metric_name, value in val_metrics.items():
+            if isinstance(value, list):
+                # 如果是类别准确率列表，分别保存每个类别的准确率
+                class_names = ['scab', 'healthy', 'frog_eye_leaf_spot', 
+                            'rust', 'complex', 'powdery_mildew']
+                f.write(f"  {metric_name}:\n")
+                for idx, class_acc in enumerate(value):
+                    f.write(f"    {class_names[idx]}: {class_acc:.4f}\n")
+            else:
+                # 其他标量指标直接保存
+                f.write(f"  {metric_name}: {value:.4f}\n")
+    
+    # 3. 保存训练历史数据
+    history_df = pd.DataFrame(history)
+    history_df.to_csv(os.path.join(checkpoint_dir, 'training_history.csv'), index=False)
+    
+    print("\nTraining completed!")
+    print(f"Best validation acc: {best_val_f1:.4f} at epoch {best_epoch}")
+    print(f"Model checkpoints and training history saved to: {checkpoint_dir}")
 
 if __name__ == '__main__':
     main()

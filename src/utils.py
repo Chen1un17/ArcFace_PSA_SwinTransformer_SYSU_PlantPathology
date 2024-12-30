@@ -1,39 +1,50 @@
 # src/utils.py
 import numpy as np
 import torch
-from sklearn.metrics import f1_score, accuracy_score
-
 from sklearn.metrics import f1_score, accuracy_score, average_precision_score
-
-# utils.py
-from sklearn.metrics import f1_score, accuracy_score, average_precision_score
-import numpy as np
-
+import random
 def calculate_metrics(outputs, targets, threshold=0.5):
     """
-    计算 F1 分数、准确率和平均精度均值 (mAP)。
+    计算多标签分类问题的 F1 分数、准确率和平均精度均值 (mAP)。
+    
+    这个函数专门处理多标签场景，其中每个样本可以同时属于多个类别。
+    对于F1分数，我们分别计算每个类别的分数，然后取平均值。
+    对于准确率，我们计算每个预测位置的正确率。
+    对于mAP，我们使用每个类别的精确率-召回率曲线下的面积，然后取平均值。
 
     参数:
         outputs (numpy.ndarray): 模型的输出概率，形状为 (num_samples, num_classes)
         targets (numpy.ndarray): 真实标签，形状为 (num_samples, num_classes)
-        threshold (float or list): 将概率转换为二进制预测的阈值，可以是单个值或每个类别的列表
+        threshold (float or list): 将概率转换为预测标签的阈值，可以是单个值或每个类别的列表
 
     返回:
-        f1 (float): F1 分数 (macro)
-        accuracy (float): 准确率
-        map_score (float): 平均精度均值 (mAP) (macro)
+        f1 (float): 宏平均F1分数
+        accuracy (float): 样本级别的准确率
+        map_score (float): 宏平均精度均值
     """
+    # 将阈值转换为预测标签
     if isinstance(threshold, list):
         preds = (outputs > np.array(threshold)).astype(int)
     else:
         preds = (outputs > threshold).astype(int)
-
-    f1 = f1_score(targets, preds, average='macro', zero_division=0)
-    accuracy = accuracy_score(targets, preds)
+    
+    # 计算宏平均F1分数：分别计算每个类别的F1分数，然后取平均值
+    f1_scores = []
+    for i in range(targets.shape[1]):
+        class_f1 = f1_score(targets[:, i], preds[:, i], zero_division=0)
+        f1_scores.append(class_f1)
+    f1 = np.mean(f1_scores)
+    
+    # 计算多标签准确率：计算每个预测位置的正确率
+    total_predictions = targets.shape[0] * targets.shape[1]  # 样本数 × 类别数
+    correct_predictions = np.sum(targets == preds)  # 统计所有正确的预测位置
+    accuracy = correct_predictions / total_predictions
+    
+    # 计算平均精度均值(mAP)：分别计算每个类别的AP，然后取平均值
+    # 注意：average_precision_score已经能正确处理每个类别，所以直接使用macro平均
     map_score = average_precision_score(targets, outputs, average='macro')
-
+    
     return f1, accuracy, map_score
-
 
 
 def save_checkpoint(state, filename='checkpoint.pth'):
@@ -169,3 +180,52 @@ def run_vis_plot_across_models(modules, input, layer_id, Vis, title,
     fig.tight_layout()
     plt.subplots_adjust(wspace=0.1, hspace=0.2)
 
+def calculate_batch_accuracy(predictions, labels):
+    """
+    计算多标签分类任务中每个类别的准确率。
+    
+    参数:
+        predictions: torch.Tensor
+            模型的预测输出 (batch_size, num_classes)
+            经过sigmoid激活,值域在[0,1]之间
+        labels: torch.Tensor
+            真实标签 (batch_size, num_classes)
+            二值化的标签,只包含0和1
+            
+    返回:
+        list: 每个类别的准确率列表
+        float: 整体的平均准确率
+    """
+    batch_size, num_classes = predictions.size()
+    
+    # 将预测值和标签转换为numpy数组
+    predictions = predictions.detach().cpu().numpy()
+    labels = labels.detach().cpu().numpy()
+    
+    # 初始化每个类别的正确预测计数
+    class_correct = np.zeros(num_classes)
+    class_total = np.zeros(num_classes)
+    
+    # 对每个样本的每个类别分别计算
+    for i in range(batch_size):
+        for j in range(num_classes):
+            prediction = 1 if predictions[i][j] >= 0.5 else 0
+            if prediction == labels[i][j]:
+                class_correct[j] += 1
+            class_total[j] += 1
+    
+    # 计算每个类别的准确率
+    class_accuracies = class_correct / class_total
+    
+    # 计算整体准确率(所有类别的平均)
+    overall_accuracy = np.mean(class_accuracies)
+    
+    return class_accuracies, overall_accuracy
+
+def set_seed(seed):
+    """设置随机种子以确保实验可重复性"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
