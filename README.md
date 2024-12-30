@@ -84,4 +84,5 @@ python src/arcvis.py
 Ð§¹û£º
 ![alt text](example.gif)
 ![alt text](gifs/95cd695ad68c78a4.gif)
-![image-20241230172354557](C:\Users\ÊùÄê\AppData\Roaming\Typora\typora-user-images\image-20241230172354557.png)
+![alt text](Swin.png)
+![alt text](SwinCheck.png)
