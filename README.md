@@ -1,14 +1,18 @@
-# ÔËĞĞÖ¸ÄÏ
+# HighLights
+-  Implemented a multi-label variant of ArcFace Loss
+-  Incorporated the PSA (Polarized Self-Attention) attention mechanism into the Swin Transformer architecture.
 
-SYSU 2024´óÈıÉÏÑ§ÆÚ¼ÆËã»úÊÓ¾õ×÷Òµ
-»ùÓÚ¶àÉñ¾­ÍøÂçÓë¶à±êÇ©ArcFaceLossµÄPlant Pathology-2021½â¾ö·½°¸Óë½á¹û¿ÉÊÓ»¯
+# è¿è¡ŒæŒ‡å—
 
-## ²¿ÊğÔËĞĞ
+SYSU 2024å¤§ä¸‰ä¸Šå­¦æœŸè®¡ç®—æœºè§†è§‰ä½œä¸š
+åŸºäºå¤šç¥ç»ç½‘ç»œä¸å¤šæ ‡ç­¾ArcFaceLossçš„Plant Pathology-2021è§£å†³æ–¹æ¡ˆä¸ç»“æœå¯è§†åŒ–
+
+## éƒ¨ç½²è¿è¡Œ
 
 
-### °²×°ÒÀÀµ
+### å®‰è£…ä¾èµ–
 
-ÔÚ×Ô¼ºµÄÔËĞĞÄ¿Â¼ÏÂ
+åœ¨è‡ªå·±çš„è¿è¡Œç›®å½•ä¸‹
 
 ```bash
 git clone https://github.com/Chen1un17/ArcFace_PSA_SwinTransformer.git
@@ -17,26 +21,26 @@ conda activate vis
 pip install -r requirements.txt
 ```
 
-### Â·¾¶ÉèÖÃ
+### è·¯å¾„è®¾ç½®
 
-ÔÚ`evaluate.py`£¬`train.py`ÖĞ¶¼ÓĞ`data_dir`µÄÂ·¾¶ÉèÖÃ£¬ĞèÒª¸ù¾İ×Ô¼ºµÄÂ·¾¶ÖØĞÂÉèÖÃ¾ø¶ÔÂ·¾¶ºó·½ÄÜÕı³£ÔËĞĞ
+åœ¨`evaluate.py`ï¼Œ`train.py`ä¸­éƒ½æœ‰`data_dir`çš„è·¯å¾„è®¾ç½®ï¼Œéœ€è¦æ ¹æ®è‡ªå·±çš„è·¯å¾„é‡æ–°è®¾ç½®ç»å¯¹è·¯å¾„åæ–¹èƒ½æ­£å¸¸è¿è¡Œ
 
-### ÔËĞĞ²½Öè
+### è¿è¡Œæ­¥éª¤
 
-1. ÑµÁ·Ä£ĞÍ
-ÔÚÏîÄ¿¸ùÄ¿Â¼ÏÂÔËĞĞÒÔÏÂÃüÁî¿ªÊ¼ÑµÁ·£º
-Èç¹ûÒªÊ¹ÓÃ¼ÓÇ¿ºóµÄÄ£ĞÍ£¬ĞèÒª½«`check_dir`µÄÂ·¾¶¸ÄÎª`checkpoints_enhanced/best_model.pth`
+1. è®­ç»ƒæ¨¡å‹
+åœ¨é¡¹ç›®æ ¹ç›®å½•ä¸‹è¿è¡Œä»¥ä¸‹å‘½ä»¤å¼€å§‹è®­ç»ƒï¼š
+å¦‚æœè¦ä½¿ç”¨åŠ å¼ºåçš„æ¨¡å‹ï¼Œéœ€è¦å°†`check_dir`çš„è·¯å¾„æ”¹ä¸º`checkpoints_enhanced/best_model.pth`
 
 ```bash
 python src/main.py --mode train
 
 ```
 
-ÑµÁ·¹ı³ÌÖĞ£¬×î¼ÑÄ£ĞÍ½«±£´æÔÚ `checkpoints/best_model.pth`
+è®­ç»ƒè¿‡ç¨‹ä¸­ï¼Œæœ€ä½³æ¨¡å‹å°†ä¿å­˜åœ¨ `checkpoints/best_model.pth`
 
-2. ÆÀ¹ÀÄ£ĞÍ
+2. è¯„ä¼°æ¨¡å‹
 
-ÑµÁ·Íê³Éºó£¬Ê¹ÓÃÒÔÏÂÃüÁîÔÚÑéÖ¤¼¯ÉÏÆÀ¹ÀÄ£ĞÍĞÔÄÜ£º
+è®­ç»ƒå®Œæˆåï¼Œä½¿ç”¨ä»¥ä¸‹å‘½ä»¤åœ¨éªŒè¯é›†ä¸Šè¯„ä¼°æ¨¡å‹æ€§èƒ½ï¼š
 
 ```bash
 
@@ -44,9 +48,9 @@ python src/main.py --mode evaluate
 
 ```
 
-3. ²âÊÔÄ£ĞÍ
+3. æµ‹è¯•æ¨¡å‹
 
-½«`evaluate.py`ÖĞval_csvÓëval_imagesÖØĞÂÉèÖÃÎªÒÔÏÂ
+å°†`evaluate.py`ä¸­val_csvä¸val_imagesé‡æ–°è®¾ç½®ä¸ºä»¥ä¸‹
 
 ```python
 
@@ -55,13 +59,13 @@ python src/main.py --mode evaluate
 
 ```
 
-¿ÉÒÔÊ¹ÓÃ²âÊÔ¼¯²âÊÔÄ£ĞÍ
+å¯ä»¥ä½¿ç”¨æµ‹è¯•é›†æµ‹è¯•æ¨¡å‹
 
-4. ¿ÉÊÓ»¯Ä£ĞÍ¾ö²ß
+4. å¯è§†åŒ–æ¨¡å‹å†³ç­–
 
-ÔËĞĞ¿ÉÊÓ»¯½Å±¾£¬Éú³É Grad-CAM ¿ÉÊÓ»¯½á¹û£º
+è¿è¡Œå¯è§†åŒ–è„šæœ¬ï¼Œç”Ÿæˆ Grad-CAM å¯è§†åŒ–ç»“æœï¼š
 
-¶ÔEfficientNet½øĞĞ¿ÉÊÓ»¯
+å¯¹EfficientNetè¿›è¡Œå¯è§†åŒ–
 
 ```bash
 
@@ -69,7 +73,7 @@ python src/visualize.py
 
 ```
 
-¶ÔEVA-CLIP½øĞĞ¿ÉÊÓ»¯
+å¯¹EVA-CLIPè¿›è¡Œå¯è§†åŒ–
 
 ```bash
 
@@ -77,14 +81,14 @@ python src/attentionvis.py
 
 ```
 
-¶ÔArcPSASwinTransformer½øĞĞ¿ÉÊÓ»¯
+å¯¹ArcPSASwinTransformerè¿›è¡Œå¯è§†åŒ–
 ```bash
 python src/arcvis.py
 ```
 
-Éú³ÉµÄ¿ÉÊÓ»¯ GIF ÎÄ¼ş½«±£´æÔÚ `outputs/example.gif`
+ç”Ÿæˆçš„å¯è§†åŒ– GIF æ–‡ä»¶å°†ä¿å­˜åœ¨ `outputs/example.gif`
 
-Ğ§¹û£º
+æ•ˆæœï¼š
 ![alt text](example.gif)
 ![alt text](gifs/95cd695ad68c78a4.gif)
 ![alt text](Swin.png)
